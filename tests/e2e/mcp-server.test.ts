@@ -53,7 +53,15 @@ beforeAll(async () => {
     logger: silent,
   });
   const httpServer = await startMcpHttp({
-    serverFactory: () => buildMcpServer({ ops, subagents, candidates, logger: silent }),
+    serverFactory: () =>
+      buildMcpServer({
+        ops,
+        subagents,
+        candidates,
+        journal,
+        streamHealth: () => ({ "BTC/USDT": { lastCloseAt: null } }),
+        logger: silent,
+      }),
     port: 0,
     authToken: "test-token-16-characters",
     logger: silent,
@@ -151,7 +159,15 @@ describe("MCP server e2e — end-to-end trade flow via MCP client", () => {
       logger: silent,
     });
     const httpServer = await startMcpHttp({
-      serverFactory: () => buildMcpServer({ ops, subagents, candidates, logger: silent }),
+      serverFactory: () =>
+      buildMcpServer({
+        ops,
+        subagents,
+        candidates,
+        journal,
+        streamHealth: () => ({ "BTC/USDT": { lastCloseAt: null } }),
+        logger: silent,
+      }),
       port: 0,
       authToken: "token-16-chars-long!",
       logger: silent,

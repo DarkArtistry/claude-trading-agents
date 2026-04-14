@@ -20,6 +20,7 @@ interface Connection {
 
 export class KlineStream extends EventEmitter<Events> {
   private connections: Connection[] = [];
+  private lastCloseAt = new Map<Symbol, number>();
 
   constructor(
     private symbols: Symbol[],
@@ -27,6 +28,14 @@ export class KlineStream extends EventEmitter<Events> {
     private useTestnet: boolean,
   ) {
     super();
+  }
+
+  health(): Record<string, { lastCloseAt: number | null }> {
+    const out: Record<string, { lastCloseAt: number | null }> = {};
+    for (const s of this.symbols) {
+      out[s] = { lastCloseAt: this.lastCloseAt.get(s) ?? null };
+    }
+    return out;
   }
 
   start(): void {
@@ -70,6 +79,7 @@ export class KlineStream extends EventEmitter<Events> {
     const msg = JSON.parse(raw);
     const k = msg.k;
     if (!k || !k.x) return;
+    this.lastCloseAt.set(symbol, Date.now());
     this.emit("candleClose", {
       symbol,
       openTime: k.t,

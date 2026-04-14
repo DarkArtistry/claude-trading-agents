@@ -101,6 +101,8 @@ export async function startMcp(): Promise<McpRuntime> {
         ops,
         subagents,
         candidates,
+        journal,
+        streamHealth: () => stream.health(),
         logger: logger.child({ c: "mcp-server" }),
       }),
     port: config.mcp.port,

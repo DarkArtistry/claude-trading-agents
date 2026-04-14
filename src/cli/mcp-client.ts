@@ -70,4 +70,17 @@ export class TradingMcpClient {
   getNextCandidate(timeoutMs = 25_000): Promise<Candidate | null> {
     return this.call("get_next_candidate", { timeoutMs });
   }
+  getStreamHealth(): Promise<Record<string, { lastCloseAt: number | null }>> {
+    return this.call("get_stream_health");
+  }
+  recordCandidateOutcome(
+    candidateId: string,
+    outcome: "taken" | "skipped" | "rejected",
+    reason: string,
+  ): Promise<{ ok: true }> {
+    return this.call("record_candidate_outcome", { candidateId, outcome, reason });
+  }
+  getRecentAgentEvents(limit = 20): Promise<unknown[]> {
+    return this.call("get_recent_agent_events", { limit });
+  }
 }

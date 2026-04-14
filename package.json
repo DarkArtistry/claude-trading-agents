@@ -1,0 +1,35 @@
+{
+  "name": "trading-agents",
+  "version": "0.1.0",
+  "description": "Multi-agent crypto trading on Binance. PM agent on Claude Managed Agents; trading MCP server hosted by us. Bun TUI.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev:mcp": "bun run --watch bin/mcp.ts",
+    "dev:cli": "bun run --watch bin/cli.ts",
+    "start:mcp": "bun run bin/mcp.ts",
+    "start:cli": "bun run bin/cli.ts",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "smoke:mcp": "bun run tests/smoke/live-mcp.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.88.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "ccxt": "^4.4.0",
+    "ink": "^5.0.1",
+    "react": "^18.3.1",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.13",
+    "@types/react": "^18.3.12",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}

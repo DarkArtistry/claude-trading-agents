@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { loadConfig } from "../config";
 import { createLogger } from "../util/logger";
 import { LocalPm } from "./local-pm";
+import { PmSession } from "./session";
 import { TradingMcpClient } from "./mcp-client";
 import { App } from "../tui/App";
 import type { ChatMessage, StateSource, TuiState } from "../tui/hooks";
@@ -33,12 +34,31 @@ export async function startCli(): Promise<void> {
   await mcp.connect();
   logger.info("mcp connected");
 
-  const pm = new LocalPm({
-    apiKey: config.anthropicApiKey,
-    model: config.agents.pmModel,
-    mcp,
-    logger: logger.child({ c: "local-pm" }),
-  });
+  const pm: LocalPm | PmSession =
+    config.agents.pmBackend === "managed"
+      ? (() => {
+          if (!config.mcp.publicUrl) {
+            throw new Error(
+              "PM_BACKEND=managed requires MCP_PUBLIC_URL (a public HTTPS URL Anthropic's container can reach).",
+            );
+          }
+          logger.info("using managed PM backend (Anthropic-hosted session)");
+          return new PmSession({
+            apiKey: config.anthropicApiKey,
+            pmModel: config.agents.pmModel,
+            mcpPublicUrl: config.mcp.publicUrl,
+            mcpAuthToken: config.mcp.authToken,
+            agentCachePath: config.agents.cachePath,
+            logger: logger.child({ c: "pm-session" }),
+            attachSessionId: config.agents.attachSessionId,
+          });
+        })()
+      : new LocalPm({
+          apiKey: config.anthropicApiKey,
+          model: config.agents.pmModel,
+          mcp,
+          logger: logger.child({ c: "local-pm" }),
+        });
 
   pm.on("agentMessage", (text) => {
     const trimmed = text.trim();
@@ -69,7 +89,16 @@ export async function startCli(): Promise<void> {
   await pm.start();
 
   void pollDashboard();
-  void pollCandidates();
+  // When attaching to an existing session as a secondary frontend, don't
+  // also long-poll candidates — the primary TUI owns that firehose. Otherwise
+  // the MCP queue would split candidates between frontends.
+  const isAttachedFrontend =
+    config.agents.pmBackend === "managed" && !!config.agents.attachSessionId;
+  if (!isAttachedFrontend) {
+    void pollCandidates();
+  } else {
+    logger.info("attached frontend: skipping candidate poll (primary owns it)");
+  }
 
   const stateSource: StateSource = {
     getSnapshot: (): TuiState => ({

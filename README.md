@@ -24,34 +24,48 @@ It also doubles as a reference architecture for a **Claude + MCP** trading syste
 
 ## Architecture
 
-### Two processes
+### Two PM backends (one codebase)
+
+The PM agent can run in either of two modes — selected at runtime via `PM_BACKEND`:
+
+**`managed` — [Anthropic Managed Agents](https://platform.claude.com/docs/en/managed-agents/overview) (the project's purpose).** The PM agent lives in Anthropic's server-side harness. Anthropic runs the tool-use loop and calls our MCP server directly over HTTPS. The CLI only streams events from `beta.sessions.events.stream`. **Multiple frontends can attach to the same session id** — a TUI, a web UI, a webhook — and see the same tool activity, because the session isn't anchored to any one process. The agent and environment are created once and cached in `data/agent-cache.json`.
+
+**`local` — in-process Messages API.** The CLI runs the tool loop itself via `client.messages.create`, invoking MCP tools in the same process. No tunnel, no Anthropic-side state. Zero-config, but single-frontend only.
 
 ```
-┌─ Bun CLI (local) ─────────────┐     ┌─ Anthropic Messages API ────────┐
-│ - Ink TUI: chat + dashboard   │     │                                 │
-│ - LocalPm (in-process agent)  │────►│  Claude Opus/Sonnet/Haiku       │
-│ - MCP client                  │     │  (tool_use loop)                │
-└──────────────┬────────────────┘     └─────────────────────────────────┘
-               │
-               │  MCP over localhost HTTP (bearer-token auth)
-               ▼
-┌─ trading-agents-mcp (localhost:3333) ────────────────────────────────┐
-│ - Binance testnet client                - Fast loop (stops, PnL)      │
-│ - SQLite journal / positions            - Signal loop (candle-close) │
-│ - Risk engine (hard rails)              - Candidate queue            │
-│ - Sub-agents (Risk / Strategy / Execution) via Messages API          │
-│                                                                      │
-│ MCP tools exposed to the PM:                                         │
-│   get_portfolio_summary, get_positions, get_ticker, get_klines,      │
-│   get_indicators, check_risk_limits, place_order, cancel_order,      │
-│   get_next_candidate,                                                │
-│   delegate_to_risk, delegate_to_strategy, delegate_to_execution      │
-└──────────────────────────────────────────────────────────────────────┘
+                 PM_BACKEND=managed (multi-frontend)
+   ┌────────────┐   ┌────────────┐   ┌────────────┐
+   │ Bun TUI    │   │ Web UI     │   │ Webhook    │   ← any number of clients
+   └──────┬─────┘   └──────┬─────┘   └──────┬─────┘     stream the same session
+          │                │                │
+          ▼                ▼                ▼
+   ┌─────────────────────────────────────────────────┐
+   │  Anthropic Managed Agents  (beta.sessions)      │
+   │  - Agent + Environment created once, cached     │
+   │  - Runs Claude tool-use loop server-side        │
+   └──────────────────────┬──────────────────────────┘
+                          │ MCP over public HTTPS
+                          │ (bearer token as ?token=... query)
+                          ▼
+   ┌─────────────────────────────────────────────────┐
+   │  trading-agents-mcp  (public URL via tunnel)    │
+   │  Binance · SQLite · risk · signal/fast loops ·  │
+   │  sub-agents (Risk / Strategy / Execution)       │
+   └─────────────────────────────────────────────────┘
+
+
+                 PM_BACKEND=local (single-frontend dev)
+   ┌─ Bun CLI ──────────────────────┐   ┌─ Anthropic Messages API ─┐
+   │ Ink TUI + in-process PM loop   │──►│  Claude tool_use          │
+   └──────────────┬─────────────────┘   └───────────────────────────┘
+                  │ MCP over localhost HTTP
+                  ▼
+           trading-agents-mcp (localhost:3333)
 ```
 
-The MCP server owns **all trading state** — Binance client, SQLite, risk engine, signal/fast loops, sub-agents. The CLI owns the TUI + the PM agent; it queries MCP every turn and has no local trading state.
+**Tools the PM calls (same list in both modes):** `get_portfolio_summary`, `get_positions`, `get_ticker`, `get_klines`, `get_indicators`, `check_risk_limits`, `place_order`, `cancel_order`, `get_next_candidate`, `delegate_to_risk`, `delegate_to_strategy`, `delegate_to_execution`.
 
-> **Note on Claude Managed Agents.** The architecture is designed so the local `LocalPm` can be swapped for Anthropic's [Managed Agents API](https://platform.claude.com/docs/en/managed-agents/overview): the agent would run in Anthropic's container and call our MCP over a public HTTPS tunnel. The codebase has the full scaffolding (`src/agents/pm.ts`, `src/cli/session.ts`) but defaults to local mode for zero-config dev. Set `MCP_PUBLIC_URL` to a public HTTPS URL and swap `LocalPm` for `PmSession` in `bootstrap.ts` to flip it on.
+The MCP server owns **all trading state** — Binance client, SQLite, risk engine, signal/fast loops, sub-agents. The CLI has no local trading state; it queries MCP every turn.
 
 ### Two-speed loop
 
@@ -162,7 +176,7 @@ src/
 ├── cli/
 │   ├── bootstrap.ts          # wires PM + MCP client + TUI
 │   ├── local-pm.ts           # in-process Messages API PM loop
-│   ├── session.ts            # Managed Agents PM (alternate backend, unused by default)
+│   ├── session.ts            # Managed Agents PM (PM_BACKEND=managed)
 │   ├── mcp-client.ts         # client-side MCP
 │   └── agent-cache.ts        # persist Managed Agent/Environment ids
 ├── loops/
@@ -240,7 +254,10 @@ Key env vars:
 | `DRY_RUN` | Log orders instead of placing | `true` |
 | `MCP_PORT` | MCP HTTP server port | `3333` |
 | `MCP_AUTH_TOKEN` | Bearer token for MCP | (dev default — rotate) |
-| `MCP_PUBLIC_URL` | Public HTTPS URL (for Managed Agents mode) | unset → local mode |
+| `MCP_PUBLIC_URL` | Public HTTPS URL (required for `PM_BACKEND=managed`) | unset |
+| `PM_BACKEND` | `managed` (Anthropic-hosted session) or `local` (in-process) | `local` |
+| `SESSION_ID` | If set under `PM_BACKEND=managed`, attach to this existing session instead of creating a new one (multi-frontend mode) | unset |
+| `AGENT_CACHE_PATH` | Where the managed agent / environment ids are cached | `./data/agent-cache.json` |
 | `PM_MODEL` | PM agent model | `claude-opus-4-6` |
 | `SUB_AGENT_MODEL` | Risk / Strategy / Execution model | `claude-sonnet-4-6` |
 | `LOG_LEVEL` | `debug` / `info` / `warn` / `error` | `info` |
@@ -251,14 +268,116 @@ Key env vars:
 
 ## Run
 
-**Two terminals. No tunnel, no cloud.**
+Two PM backends, selected at startup via `PM_BACKEND`. Pick one:
+
+### Option A — Managed Agents (recommended; **the project's purpose**)
+
+The PM runs inside Anthropic's managed-agents harness and calls our MCP over public HTTPS. Multiple frontends can attach to the same session.
+
+**1. Start the MCP server locally**
 
 ```bash
-# Terminal 1 — the MCP server (Binance, SQLite, signal loops, sub-agents)
+bun run dev:mcp
+```
+
+It binds `http://localhost:3333` with `MCP_AUTH_TOKEN` as the bearer.
+
+**2. Expose MCP via a public HTTPS URL**
+
+Anthropic's container can't reach `localhost`. Use a tunnel:
+
+```bash
+# Cloudflare Quick Tunnel (no account required, force HTTP/2 to avoid QUIC issues)
+cloudflared tunnel --protocol http2 --url http://localhost:3333
+# prints:  https://<random>.trycloudflare.com
+```
+
+Any HTTPS reverse tunnel works (ngrok, localtunnel, a real domain); Cloudflare is fastest to stand up.
+
+**3. Point the CLI at it and flip the backend to `managed`**
+
+Add these to `.env` (or export inline):
+
+```bash
+PM_BACKEND=managed
+MCP_PUBLIC_URL=https://<random>.trycloudflare.com
+# MCP_AUTH_TOKEN must match the token the MCP server is running with
+```
+
+**4. Start the CLI**
+
+```bash
+bun run dev:cli
+```
+
+On first launch the CLI calls `beta.agents.create` + `beta.environments.create`, caches the ids in `data/agent-cache.json`, then opens a `beta.sessions.create`. Subsequent launches reuse the cached agent and environment — only a fresh `session` is created.
+
+You'll see log lines confirming the mode:
+
+```
+INFO  using managed PM backend (Anthropic-hosted session)
+INFO  agent created       { id: "agt_...", version: 1 }
+INFO  environment created { id: "env_..." }
+INFO  session created     { id: "ses_..." }
+```
+
+**Multi-frontend:** once a session exists, any other process holding the same `sessionId` and API key can call `client.beta.sessions.events.stream(sessionId)` to observe the same PM conversation live, and `client.beta.sessions.events.send(sessionId, ...)` to push user input. The MCP server is hit by Anthropic's harness, not by any individual frontend, so adding a web UI or webhook alongside the TUI is additive.
+
+#### Launching multiple Bun TUIs (the default: one session per window)
+
+Every `dev:cli` launch calls `beta.sessions.create` and gets a **fresh session id**. Open as many terminals as you want — each is an independent conversation with its own PM, all fanning out tool calls to the same shared MCP server via Anthropic's harness.
+
+```bash
+# Window 1 — creates session S1
+PM_BACKEND=managed MCP_PUBLIC_URL=https://<tunnel>.trycloudflare.com bun run dev:cli
+# log:  INFO  session created  { id: "ses_aaa..." }
+
+# Window 2 — creates session S2 (entirely separate)
+PM_BACKEND=managed MCP_PUBLIC_URL=https://<tunnel>.trycloudflare.com bun run dev:cli
+# log:  INFO  session created  { id: "ses_bbb..." }
+
+# Window 3, window N — same story
+```
+
+Each window:
+- Has its own Claude conversation + its own system-prompt state.
+- Reuses the cached `agentId` + `environmentId` from `data/agent-cache.json` (only a fresh **session** is minted — agents/environments are created once).
+- Streams events and `send`s user input over its own session id.
+- Reads the **same** MCP state: Binance, SQLite, positions, risk limits. Any order placed from window 1 shows up in window 2's dashboard pane on the next poll.
+
+Good use cases: a teammate on their own machine driving a second session; side-by-side Opus vs Sonnet windows; an analyst running "what-if" reads against the live portfolio while you work in the main window.
+
+**Heads-up on the candidate firehose.** Every window long-polls `get_next_candidate`. The MCP queue delivers each candidate to exactly one caller, so with N windows running, auto-fired candidates get split non-deterministically across them. For autonomous-mode demos, run a single window (or disable the candidate poll in secondary windows by attaching — see below).
+
+#### Advanced: multiple TUIs sharing one session
+
+Opt in with `SESSION_ID=<the id from window 1's log>` on the second window. Both windows then see every agent message and tool call in lockstep, either human can type, and only the primary polls for candidates. Secondary windows won't tear down the session on exit.
+
+```bash
+# Primary — creates the session
+PM_BACKEND=managed MCP_PUBLIC_URL=... bun run dev:cli
+# log:  INFO  session created  { id: "ses_abc..." }
+
+# Secondary — attaches to the SAME session
+PM_BACKEND=managed MCP_PUBLIC_URL=... SESSION_ID=ses_abc... bun run dev:cli
+# log:  INFO  session attached   { id: "ses_abc..." }
+#       INFO  attached frontend: skipping candidate poll (primary owns it)
+```
+
+**Rotating the MCP URL.** If your tunnel URL changes, bump `MCP_PUBLIC_URL` and restart the CLI — the cache keys on `mcpUrl`, so it'll automatically mint a new agent for the new URL.
+
+**Tearing down cached agents.** Delete `data/agent-cache.json` to force a clean `agents.create` / `environments.create` on next launch.
+
+### Option B — Local (in-process, zero-config dev)
+
+No tunnel, no cloud agent. The CLI runs the PM tool-use loop itself against the Messages API. Single frontend only.
+
+```bash
+# Terminal 1
 bun run dev:mcp
 
-# Terminal 2 — the TUI + local PM agent
-bun run dev:cli
+# Terminal 2
+PM_BACKEND=local bun run dev:cli    # or just `bun run dev:cli` (local is the default)
 ```
 
 TUI layout:
@@ -507,9 +626,12 @@ Leave Opus for the demo / final testing; run day-to-day on Sonnet.
 Your API key and your Anthropic credits are in **different workspaces**. The console's workspace dropdown (top-left) is sticky — credits added in workspace A aren't available to a key minted in workspace B. Fix: create a new API key in the workspace that shows your credit balance.
 
 ### `Agent has invalid configuration: mcp_servers[...].url: MCP server URL host "localhost" resolves to loopback`
-You were trying to run the **Managed Agents** mode (CLI talking to an agent in Anthropic's cloud) without a public MCP URL. Anthropic's container can't reach your laptop. Either:
-- Stick with local mode (default — `LocalPm` runs the PM in-process, no public URL needed), or
-- Expose your MCP via `cloudflared tunnel --protocol http2 --url http://localhost:3333`, paste the https URL into `MCP_PUBLIC_URL`, and switch `bootstrap.ts` to use `PmSession` instead of `LocalPm`.
+You set `PM_BACKEND=managed` but `MCP_PUBLIC_URL` still points at localhost (or is unset and something else fell through). Anthropic's container can't reach your laptop. Either:
+- Drop back to `PM_BACKEND=local` (in-process PM, no public URL needed), or
+- Stand up a public tunnel (`cloudflared tunnel --protocol http2 --url http://localhost:3333`) and set `MCP_PUBLIC_URL` to the `https://...` URL it prints.
+
+### `PM_BACKEND=managed requires MCP_PUBLIC_URL`
+Bootstrap threw this on startup because you opted into managed mode without giving it a URL to hand to Anthropic. Set `MCP_PUBLIC_URL` in `.env` (see the managed-mode run section above).
 
 ### `Streamable HTTP error: ... missing Mcp-Session-Id or initialize request`
 Your CLI is holding a session id from a dead MCP server (likely restarted). Restart the CLI:
@@ -563,7 +685,7 @@ The E2E suite spins up the real MCP server in-process with a fake Binance, conne
 
 **v0.3**
 - Multi-tenant MCP (per-customer Binance credentials + DBs)
-- Optional Managed Agents mode: swap `LocalPm` for `PmSession` + public HTTPS
+- Second frontend (web UI) attaching to the same managed session as the TUI, to demo multi-client streaming
 - Portfolio-level rebalancing decisions
 - Alternate exchanges via ccxt
 

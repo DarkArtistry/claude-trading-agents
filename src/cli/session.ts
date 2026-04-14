@@ -20,6 +20,12 @@ export interface PmSessionOpts {
   mcpAuthToken: string;
   agentCachePath: string;
   logger: Logger;
+  /**
+   * If set, attach to an existing session instead of calling
+   * `beta.sessions.create`. Lets multiple Bun TUIs observe + drive the same
+   * session concurrently (every frontend streams events and can `send`).
+   */
+  attachSessionId?: string;
 }
 
 export class PmSession extends EventEmitter<PmSessionEventMap> {
@@ -37,20 +43,27 @@ export class PmSession extends EventEmitter<PmSessionEventMap> {
   async start(): Promise<{ sessionId: string; agentId: string; environmentId: string }> {
     const agentId = await this.ensureAgent();
     const environmentId = await this.ensureEnvironment();
-    const session = await this.anthropic().beta.sessions.create({
-      agent: agentId,
-      environment_id: environmentId,
-      title: "Trading PM",
-    });
-    this.sessionId = session.id;
-    this.opts.logger.info("session created", { id: session.id });
+    if (this.opts.attachSessionId) {
+      this.sessionId = this.opts.attachSessionId;
+      this.opts.logger.info("session attached", { id: this.sessionId });
+    } else {
+      const session = await this.anthropic().beta.sessions.create({
+        agent: agentId,
+        environment_id: environmentId,
+        title: "Trading PM",
+      });
+      this.sessionId = session.id;
+      this.opts.logger.info("session created", { id: session.id });
+    }
     void this.streamLoop();
-    return { sessionId: session.id, agentId, environmentId };
+    return { sessionId: this.sessionId, agentId, environmentId };
   }
 
   async stop(): Promise<void> {
     this.streaming = false;
-    if (this.sessionId) {
+    // Attached frontends must NOT delete the shared session — only the process
+    // that created it is allowed to tear it down.
+    if (this.sessionId && !this.opts.attachSessionId) {
       await this.anthropic().beta.sessions.delete(this.sessionId).catch(() => undefined);
     }
   }

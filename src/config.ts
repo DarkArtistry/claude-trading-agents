@@ -23,6 +23,11 @@ const EnvSchema = z.object({
   PM_MODEL: z.string().default("claude-opus-4-6"),
   SUB_AGENT_MODEL: z.string().default("claude-sonnet-4-6"),
   AGENT_CACHE_PATH: z.string().default("./data/agent-cache.json"),
+  PM_BACKEND: z.enum(["local", "managed"]).default("local"),
+  SESSION_ID: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.string().optional(),
+  ),
 });
 
 export interface Config {
@@ -47,6 +52,8 @@ export interface Config {
     pmModel: string;
     subAgentModel: string;
     cachePath: string;
+    pmBackend: "local" | "managed";
+    attachSessionId: string | undefined;
   };
 }
 
@@ -92,6 +99,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       pmModel: parsed.PM_MODEL,
       subAgentModel: parsed.SUB_AGENT_MODEL,
       cachePath: parsed.AGENT_CACHE_PATH,
+      pmBackend: parsed.PM_BACKEND,
+      attachSessionId: parsed.SESSION_ID,
     },
   };
 }
